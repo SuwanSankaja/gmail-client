@@ -5,11 +5,19 @@ require('dotenv').config();
 const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const { sequelize, User } = require('./models');
+// Import both User and EmailMetadata models
+const { sequelize, User, EmailMetadata } = require('./models');
 const imaps = require('imap-simple');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+app.use(cors({
+  origin: 'http://localhost:3000',
+  credentials: true
+}));
+
 
 // --- Session and Passport Configuration ---
 app.use(session({
@@ -80,9 +88,8 @@ app.get('/auth/google',
 );
 
 app.get('/auth/google/callback', 
-  passport.authenticate('google', { failureRedirect: 'http://localhost:3000/' }), // On fail, go to frontend
+  passport.authenticate('google', { failureRedirect: 'http://localhost:3000/' }),
   (req, res) => {
-    // On success, redirect to the root of the frontend app
     res.redirect('http://localhost:3000/');
   }
 );
@@ -97,7 +104,7 @@ app.get('/api/user', (req, res) => {
 });
 
 
-// --- API Route to Fetch Emails ---
+// --- API Route to Fetch and Store Emails ---
 app.get('/api/emails', ensureAuthenticated, async (req, res) => {
   try {
     const user = req.user;
@@ -116,21 +123,39 @@ app.get('/api/emails', ensureAuthenticated, async (req, res) => {
     const connection = await imaps.connect(config);
     await connection.openBox('INBOX');
     const searchCriteria = ['ALL'];
-    const fetchOptions = { bodies: ['HEADER.FIELDS (FROM SUBJECT DATE)'], markSeen: false };
+    // Update fetchOptions to include the message-id, which is a unique identifier for each email
+    const fetchOptions = { bodies: ['HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)'], markSeen: false };
     const messages = await connection.search(searchCriteria, fetchOptions);
-    const emails = messages.map(item => {
-      const header = item.parts.find(part => part.which === 'HEADER.FIELDS (FROM SUBJECT DATE)').body;
+    
+    const emailsForDb = messages.map(item => {
+      const header = item.parts.find(part => part.which.includes('HEADER.FIELDS')).body;
+      // Clean up the message-id to remove angle brackets
+      const messageId = header['message-id'] ? header['message-id'][0].replace(/[<>]/g, '') : null;
+      
       return {
+        messageId: messageId,
         from: header.from ? header.from[0] : 'N/A',
         subject: header.subject ? header.subject[0] : 'No Subject',
-        date: header.date ? header.date[0] : 'No Date'
+        date: header.date ? new Date(header.date[0]) : new Date(),
+        userId: user.id // Associate the email with the current user
       };
-    }).slice(-10).reverse();
+    }).filter(email => email.messageId); // Filter out any emails that didn't have a message-id
+
+    // Use bulkCreate to efficiently insert all emails into the database.
+    // The 'ignoreDuplicates' option prevents errors if we try to insert an email that already exists.
+    if (emailsForDb.length > 0) {
+      await EmailMetadata.bulkCreate(emailsForDb, { ignoreDuplicates: true });
+      console.log(`Saved ${emailsForDb.length} email metadata records to the database.`);
+    }
+
     connection.end();
-    res.json(emails);
+
+    // Send the most recent 10 emails to the frontend
+    res.json(emailsForDb.slice(-10).reverse());
+
   } catch (error) {
-    console.error('Error fetching emails:', error);
-    res.status(500).send('Failed to fetch emails.');
+    console.error('Error fetching or saving emails:', error);
+    res.status(500).send('Failed to fetch or save emails.');
   }
 });
 
