@@ -5,43 +5,36 @@ require('dotenv').config();
 const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const { sequelize, User } = require('./models'); // Import User model
+const { sequelize, User } = require('./models');
+const imaps = require('imap-simple'); // Import the imap-simple library
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// 1. Configure Express Session
+// --- Session and Passport Configuration (No Changes Here) ---
 app.use(session({
-  secret: process.env.SESSION_SECRET, // A secret key for signing the session ID cookie
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: true,
-  cookie: { secure: false } // For development, set to false. For production, true with https.
+  cookie: { secure: false }
 }));
-
-// 2. Initialize Passport and session middleware
 app.use(passport.initialize());
 app.use(passport.session());
 
-// 3. Configure Passport Google OAuth2 Strategy
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     callbackURL: "/auth/google/callback"
   },
   async (accessToken, refreshToken, profile, done) => {
-    // This function is called when a user successfully authenticates with Google.
     try {
-      // Find if a user with this Google ID already exists
       let user = await User.findOne({ where: { googleId: profile.id } });
-
       if (user) {
-        // If user exists, update their tokens and save
         user.accessToken = accessToken;
-        user.refreshToken = refreshToken;
+        user.refreshToken = refreshToken; // Important for long-term access
         await user.save();
         return done(null, user);
       } else {
-        // If user does not exist, create a new user in the database
         user = await User.create({
           googleId: profile.id,
           email: profile.emails[0].value,
@@ -50,19 +43,17 @@ passport.use(new GoogleStrategy({
         });
         return done(null, user);
       }
-    } catch (err) {
+    } catch (err)
+{
       return done(err, null);
     }
   }
 ));
 
-// 4. Serialize and Deserialize User
-// Determines which data of the user object should be stored in the session.
 passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
-// Retrieves the user data from the session.
 passport.deserializeUser(async (id, done) => {
   try {
     const user = await User.findByPk(id);
@@ -72,48 +63,105 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
+// --- Middleware to check if the user is authenticated ---
+function ensureAuthenticated(req, res, next) {
+  if (req.isAuthenticated()) {
+    return next();
+  }
+  res.status(401).send('You are not authenticated');
+}
 
-// 5. Define Authentication Routes
-// This route starts the authentication process.
-// When a user visits this URL, they are redirected to Google's login page.
+
+// --- Authentication Routes (Scope Updated) ---
 app.get('/auth/google',
   passport.authenticate('google', { 
     scope: [
       'profile', 
       'email',
-      'https://www.googleapis.com/auth/gmail.readonly' // Scope to read emails
+      // --- FIX: Use a broader scope that is guaranteed to work with IMAP ---
+      'https://mail.google.com/' 
     ],
-    accessType: 'offline', // Important to get a refresh token
+    accessType: 'offline',
     prompt: 'consent'
   })
 );
 
-// This is the callback route Google redirects to after the user grants permission.
 app.get('/auth/google/callback', 
   passport.authenticate('google', { failureRedirect: '/login-failed' }),
   (req, res) => {
-    // Successful authentication, redirect to the frontend dashboard.
-    // We will build the frontend later. For now, let's redirect to a success page.
     res.redirect('/profile');
   }
 );
 
-// A simple route to check if the user is logged in
-app.get('/profile', (req, res) => {
-  if (req.isAuthenticated()) {
-    res.send(`Hello, ${req.user.email}. You are logged in!`);
-  } else {
-    res.redirect('/');
-  }
+// --- Profile and Root Routes (No Changes Here) ---
+app.get('/profile', ensureAuthenticated, (req, res) => {
+  res.send(`
+    <h1>Hello, ${req.user.email}</h1>
+    <p>You are logged in!</p>
+    <a href="/api/emails">Fetch My Emails</a>
+    `);
 });
-
 
 app.get('/', (req, res) => {
   res.send('Hello from the Gmail API Backend! <a href="/auth/google">Login with Google</a>');
 });
 
 
-// Start the server
+// --- API Route to Fetch Emails ---
+app.get('/api/emails', ensureAuthenticated, async (req, res) => {
+  try {
+    const user = req.user;
+
+    const xoauth2Token = Buffer.from(
+      `user=${user.email}\x01auth=Bearer ${user.accessToken}\x01\x01`
+    ).toString('base64');
+
+    const config = {
+      imap: {
+        user: user.email,
+        xoauth2: xoauth2Token,
+        host: 'imap.gmail.com',
+        port: 993,
+        tls: true,
+        authTimeout: 5000,
+        tlsOptions: { rejectUnauthorized: false }
+      }
+    };
+
+    const connection = await imaps.connect(config);
+    console.log("IMAP connection successful!");
+
+    await connection.openBox('INBOX');
+    
+    const searchCriteria = ['ALL'];
+    const fetchOptions = {
+      bodies: ['HEADER.FIELDS (FROM SUBJECT DATE)'],
+      markSeen: false,
+    };
+    
+    const messages = await connection.search(searchCriteria, fetchOptions);
+
+    const emails = messages.map(item => {
+      const header = item.parts.find(part => part.which === 'HEADER.FIELDS (FROM SUBJECT DATE)').body;
+      return {
+        from: header.from ? header.from[0] : 'N/A',
+        subject: header.subject ? header.subject[0] : 'No Subject',
+        date: header.date ? header.date[0] : 'No Date'
+      };
+    }).slice(-10).reverse();
+
+    connection.end();
+
+    res.json(emails);
+
+  } catch (error) {
+    console.error('Error fetching emails:', error);
+    res.status(500).send('Failed to fetch emails.');
+  }
+});
+
+
+// --- Start the server ---
 app.listen(PORT, async () => {
   console.log(`Server is running on http://localhost:${PORT}`);
   try {
