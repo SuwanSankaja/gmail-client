@@ -5,8 +5,9 @@ require('dotenv').config();
 const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-// Import Op for complex queries
-const { sequelize, User, EmailMetadata, Op } = require('./models');
+// Import models and Sequelize Op separately (Op was not exported from ./models and caused undefined errors)
+const { sequelize, User, EmailMetadata } = require('./models');
+const { Op } = require('sequelize');
 const imaps = require('imap-simple');
 const cors = require('cors');
 

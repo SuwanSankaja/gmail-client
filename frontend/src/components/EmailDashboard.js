@@ -17,7 +17,7 @@ const EmailDashboard = ({ user }) => {
     try {
       setLoading(true);
       // Append page and search query parameters to the request
-      const response = await fetch(`/api/emails?page=${currentPage}&search=${searchTerm}`, { credentials: 'include' });
+  const response = await fetch(`/api/emails?page=${currentPage}&search=${encodeURIComponent(searchTerm)}` , { credentials: 'include' });
       if (!response.ok) {
         throw new Error('Failed to fetch emails');
       }
@@ -62,8 +62,8 @@ const EmailDashboard = ({ user }) => {
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    setCurrentPage(1); // Reset to first page on new search
-    fetchEmails();
+    // Reset to first page; fetchEmails will auto-run due to dependency on currentPage & searchTerm
+    setCurrentPage(1);
   };
 
   const handleNextPage = () => {
