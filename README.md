@@ -111,5 +111,3 @@ Contributions are welcome! Feel free to fork this repo, submit issues, or open p
 
 ---
 
-## 📜 License
-MIT License © 2025
