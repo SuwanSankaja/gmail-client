@@ -6,12 +6,12 @@ const session = require('express-session');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const { sequelize, User } = require('./models');
-const imaps = require('imap-simple'); // Import the imap-simple library
+const imaps = require('imap-simple');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// --- Session and Passport Configuration (No Changes Here) ---
+// --- Session and Passport Configuration ---
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
@@ -31,7 +31,7 @@ passport.use(new GoogleStrategy({
       let user = await User.findOne({ where: { googleId: profile.id } });
       if (user) {
         user.accessToken = accessToken;
-        user.refreshToken = refreshToken; // Important for long-term access
+        user.refreshToken = refreshToken;
         await user.save();
         return done(null, user);
       } else {
@@ -43,8 +43,7 @@ passport.use(new GoogleStrategy({
         });
         return done(null, user);
       }
-    } catch (err)
-{
+    } catch (err) {
       return done(err, null);
     }
   }
@@ -63,7 +62,6 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// --- Middleware to check if the user is authenticated ---
 function ensureAuthenticated(req, res, next) {
   if (req.isAuthenticated()) {
     return next();
@@ -72,38 +70,30 @@ function ensureAuthenticated(req, res, next) {
 }
 
 
-// --- Authentication Routes (Scope Updated) ---
+// --- Authentication Routes ---
 app.get('/auth/google',
   passport.authenticate('google', { 
-    scope: [
-      'profile', 
-      'email',
-      // --- FIX: Use a broader scope that is guaranteed to work with IMAP ---
-      'https://mail.google.com/' 
-    ],
+    scope: ['profile', 'email', 'https://mail.google.com/'],
     accessType: 'offline',
     prompt: 'consent'
   })
 );
 
 app.get('/auth/google/callback', 
-  passport.authenticate('google', { failureRedirect: '/login-failed' }),
+  passport.authenticate('google', { failureRedirect: 'http://localhost:3000/' }), // On fail, go to frontend
   (req, res) => {
-    res.redirect('/profile');
+    // On success, redirect to the root of the frontend app
+    res.redirect('http://localhost:3000/');
   }
 );
 
-// --- Profile and Root Routes (No Changes Here) ---
-app.get('/profile', ensureAuthenticated, (req, res) => {
-  res.send(`
-    <h1>Hello, ${req.user.email}</h1>
-    <p>You are logged in!</p>
-    <a href="/api/emails">Fetch My Emails</a>
-    `);
-});
-
-app.get('/', (req, res) => {
-  res.send('Hello from the Gmail API Backend! <a href="/auth/google">Login with Google</a>');
+// --- API Route to get the current user ---
+app.get('/api/user', (req, res) => {
+  if (req.isAuthenticated()) {
+    res.json({ id: req.user.id, email: req.user.email });
+  } else {
+    res.status(401).json({ message: 'Not authenticated' });
+  }
 });
 
 
@@ -111,11 +101,7 @@ app.get('/', (req, res) => {
 app.get('/api/emails', ensureAuthenticated, async (req, res) => {
   try {
     const user = req.user;
-
-    const xoauth2Token = Buffer.from(
-      `user=${user.email}\x01auth=Bearer ${user.accessToken}\x01\x01`
-    ).toString('base64');
-
+    const xoauth2Token = Buffer.from(`user=${user.email}\x01auth=Bearer ${user.accessToken}\x01\x01`).toString('base64');
     const config = {
       imap: {
         user: user.email,
@@ -127,20 +113,11 @@ app.get('/api/emails', ensureAuthenticated, async (req, res) => {
         tlsOptions: { rejectUnauthorized: false }
       }
     };
-
     const connection = await imaps.connect(config);
-    console.log("IMAP connection successful!");
-
     await connection.openBox('INBOX');
-    
     const searchCriteria = ['ALL'];
-    const fetchOptions = {
-      bodies: ['HEADER.FIELDS (FROM SUBJECT DATE)'],
-      markSeen: false,
-    };
-    
+    const fetchOptions = { bodies: ['HEADER.FIELDS (FROM SUBJECT DATE)'], markSeen: false };
     const messages = await connection.search(searchCriteria, fetchOptions);
-
     const emails = messages.map(item => {
       const header = item.parts.find(part => part.which === 'HEADER.FIELDS (FROM SUBJECT DATE)').body;
       return {
@@ -149,11 +126,8 @@ app.get('/api/emails', ensureAuthenticated, async (req, res) => {
         date: header.date ? header.date[0] : 'No Date'
       };
     }).slice(-10).reverse();
-
     connection.end();
-
     res.json(emails);
-
   } catch (error) {
     console.error('Error fetching emails:', error);
     res.status(500).send('Failed to fetch emails.');
