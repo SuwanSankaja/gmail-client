@@ -10,6 +10,7 @@ const { sequelize, User, EmailMetadata } = require('./models');
 const { Op } = require('sequelize');
 const imaps = require('imap-simple');
 const cors = require('cors');
+const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -183,6 +184,16 @@ app.get('/api/emails', ensureAuthenticated, async (req, res) => {
     res.status(500).send('Failed to fetch emails from database.');
   }
 });
+
+// --- 404 Not Found Handler ---
+// This middleware will run if no other route matches.
+app.use((req, res, next) => {
+  res.status(404).json({ success: false, message: 'API endpoint not found' });
+});
+
+// --- Centralized Error Handler ---
+// This MUST be the last piece of middleware.
+app.use(errorHandler);
 
 
 // --- Start the server ---
