@@ -5,7 +5,7 @@ This project leverages a **React frontend**, a **Node.js backend**, and a **MySQ
 
 ---
 
-## 📸 Demo
+## 📸 Screenshots
 
 | Signin Page | Inbox Page |
 |--------------------|------------------|
